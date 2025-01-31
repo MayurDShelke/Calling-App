@@ -38,5 +38,8 @@ To set Default Calling App as the primary dialer on your Android device, follow 
   Drive Link:- https://drive.google.com/drive/folders/1KFBN3vJPt0qhT4wOcpPw4B6dqhaZvobX
 
 
+ # Zip FIle
+  File Link:-https://github.com/MayurDShelke/Calling-App/issues/1#issuecomment-2627759459  (Attached In Issue)
+
 
     
