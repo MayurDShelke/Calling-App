@@ -1,0 +1,451 @@
+# MainActivity.kt
+
+package com.mayurshelke.defaultcallingapp
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import com.google.android.material.bottomnavigation.BottomNavigationView
+
+class MainActivity : AppCompatActivity() {
+
+    private val REQUIRED_PERMISSIONS = arrayOf(
+        Manifest.permission.READ_PHONE_STATE,
+        Manifest.permission.CALL_PHONE,
+        Manifest.permission.ANSWER_PHONE_CALLS,
+        Manifest.permission.READ_CALL_LOG,
+        Manifest.permission.WRITE_CALL_LOG,
+        Manifest.permission.READ_CONTACTS,
+        Manifest.permission.WRITE_CONTACTS,
+        Manifest.permission.PROCESS_OUTGOING_CALLS
+    )
+
+    private val PERMISSION_REQUEST_CODE = 101
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // Request permissions if not granted
+        if (!arePermissionsGranted()) {
+            requestPermissions()
+        }
+
+        val bottomNavigation = findViewById<BottomNavigationView>(R.id.bottomNavigation)
+
+        // Load default fragment (Call Logs)
+        if (savedInstanceState == null) {
+            loadFragment(CallLogsFragment())
+        }
+
+        bottomNavigation.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_call_logs -> loadFragment(CallLogsFragment())
+                R.id.nav_contacts -> loadFragment(ContactsFragment())
+                R.id.nav_dialer -> loadFragment(DialerFragment())
+            }
+            true
+        }
+    }
+
+    private fun arePermissionsGranted(): Boolean {
+        return REQUIRED_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, PERMISSION_REQUEST_CODE)
+    }
+
+    private fun loadFragment(fragment: Fragment) {
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.fragmentContainer, fragment)
+            .commit()
+    }
+}
+
+# IncomingCallReceiver.kt
+
+package com.mayurshelke.defaultcallingapp
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.telephony.TelephonyManager
+import android.telecom.TelecomManager
+import android.os.Build
+import androidx.annotation.RequiresApi
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+
+class IncomingCallReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+
+        if (state == TelephonyManager.EXTRA_STATE_RINGING) {
+            val incomingNumber = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+
+            if (hasAnswerCallPermission(context)) {
+                answerCall(context)
+            } else {
+            }
+        }
+    }
+
+    // Function to check if the app has the necessary permission
+    private fun hasAnswerCallPermission(context: Context): Boolean {
+        return ActivityCompat.checkSelfPermission(context, android.Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun answerCall(context: Context) {
+        try {
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+            telecomManager.acceptRingingCall()  // Answer the call
+        } catch (e: SecurityException) {
+            // Handle the case where permission is not granted
+            e.printStackTrace()
+        }
+    }
+}
+
+# OutgoingCallReceiver.kt
+
+package com.mayurshelke.defaultcallingapp
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.telecom.TelecomManager
+import android.util.Log
+import android.os.Build
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import android.provider.Settings
+
+class OutgoingCallReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val phoneNumber = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER)
+        Log.d("OutgoingCallReceiver", "Outgoing call to: $phoneNumber")
+
+        // Check if the app is the default dialer
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+
+            // Check if the app is the default dialer
+            if (telecomManager.defaultDialerPackage == context.packageName) {
+                try {
+                    // Reject the call by calling endCall
+                    telecomManager.endCall() // Reject the call
+                    Log.d("OutgoingCallReceiver", "Call to $phoneNumber has been rejected.")
+                } catch (e: SecurityException) {
+                    Log.e("OutgoingCallReceiver", "Permission error: ${e.message}")
+                    // Handle permission error if user hasn't granted the required permissions
+                }
+            } else {
+                // If the app is not the default dialer, prompt user to set it
+                promptToSetDefaultDialer(context)
+            }
+        }
+    }
+
+    private fun promptToSetDefaultDialer(context: Context) {
+        // Prompt the user to set this app as the default dialer
+        val intent = Intent(Settings.ACTION_SETTINGS)  // Use ACTION_SETTINGS for the settings page
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }
+}
+
+#  CallLogsFragment.kt
+
+package com.mayurshelke.defaultcallingapp
+
+import android.content.ContentResolver
+import android.database.Cursor
+import android.os.Bundle
+import android.provider.CallLog
+import android.provider.ContactsContract
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.ListView
+import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import android.Manifest
+import android.content.pm.PackageManager
+
+class CallLogsFragment : Fragment() {
+
+    private val REQUIRED_PERMISSIONS = arrayOf(
+        Manifest.permission.READ_CALL_LOG,
+        Manifest.permission.READ_CONTACTS
+    )
+
+    private val PERMISSION_REQUEST_CODE = 101
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        val view = inflater.inflate(R.layout.fragment_call_logs, container, false)
+
+        // Check if permissions are granted
+        if (!arePermissionsGranted()) {
+            requestPermissions()
+        } else {
+            // If permissions are granted, load the call logs
+            loadCallLogs(view)
+        }
+
+        return view
+    }
+
+    private fun arePermissionsGranted(): Boolean {
+        return REQUIRED_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(requireActivity(), REQUIRED_PERMISSIONS, PERMISSION_REQUEST_CODE)
+    }
+
+    private fun loadCallLogs(view: View) {
+        val callLogsListView = view.findViewById<ListView>(R.id.lvCallLogs)
+
+        // Query call logs
+        val callLogs = getCallLogs()
+
+        // Display the call logs in ListView
+        if (callLogs.isNotEmpty()) {
+            val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_list_item_1, callLogs)
+            callLogsListView.adapter = adapter
+        } else {
+            Toast.makeText(requireContext(), "No call logs found", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun getCallLogs(): List<String> {
+        val logs = mutableListOf<String>()
+        val cursor: Cursor? = requireContext().contentResolver.query(
+            CallLog.Calls.CONTENT_URI, null, null, null, CallLog.Calls.DATE + " DESC"
+        )
+
+        cursor?.use {
+            while (it.moveToNext()) {
+                val number = it.getString(it.getColumnIndexOrThrow(CallLog.Calls.NUMBER))
+                val type = it.getInt(it.getColumnIndexOrThrow(CallLog.Calls.TYPE))
+                val date = it.getLong(it.getColumnIndexOrThrow(CallLog.Calls.DATE))
+                val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss").format(java.util.Date(date))
+
+                val callType = when (type) {
+                    CallLog.Calls.INCOMING_TYPE -> "Incoming"
+                    CallLog.Calls.OUTGOING_TYPE -> "Outgoing"
+                    else -> "Missed"
+                }
+
+                // Get the contact name associated with the phone number
+                val contactName = getContactName(number)
+
+                logs.add("Name: $contactName\nNumber: $number\nType: $callType\nDate: $formattedDate\n")
+            }
+        }
+        return logs
+    }
+
+    private fun getContactName(phoneNumber: String): String {
+        val cursor: Cursor? = requireContext().contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME),
+            ContactsContract.CommonDataKinds.Phone.NUMBER + " = ?",
+            arrayOf(phoneNumber),
+            null
+        )
+
+        var contactName = "Unknown"
+        cursor?.use {
+            if (it.moveToFirst()) {
+                contactName = it.getString(it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME))
+            }
+        }
+        return contactName
+    }
+}
+
+#  ContactsFragment.kt
+
+package com.mayurshelke.defaultcallingapp
+
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.database.Cursor
+import android.os.Bundle
+import android.provider.ContactsContract
+import android.telephony.PhoneNumberUtils
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import android.net.Uri
+
+class ContactsFragment : Fragment() {
+
+    private val PERMISSION_REQUEST_CODE = 101
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        val view = inflater.inflate(R.layout.fragment_contacts, container, false)
+        val recyclerView = view.findViewById<RecyclerView>(R.id.recyclerViewContacts)
+
+        recyclerView.layoutManager = LinearLayoutManager(requireContext())
+
+        val contacts = getContacts(requireContext())
+        recyclerView.adapter = ContactsAdapter(contacts, object : ContactsAdapter.OnContactClickListener {
+            override fun onContactClick(contact: Contact) {
+                makeCall(contact.phoneNumber)
+            }
+        })
+
+        return view
+    }
+
+    private fun getContacts(context: Context): List<Contact> {
+        val contactsList = mutableListOf<Contact>()
+
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return contactsList
+        }
+
+        val contactsCursor: Cursor? = context.contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            null,
+            null,
+            null,
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+        )
+
+        contactsCursor?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME))
+                val phoneNumber = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER))
+                contactsList.add(Contact(name, phoneNumber))
+            }
+        }
+
+        return contactsList
+    }
+
+    private fun makeCall(phoneNumber: String) {
+        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+            val dialIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber"))
+            startActivity(dialIntent)
+        } else {
+            ActivityCompat.requestPermissions(requireActivity(), arrayOf(Manifest.permission.CALL_PHONE), PERMISSION_REQUEST_CODE)
+        }
+    }
+}
+
+# Contact
+
+package com.mayurshelke.defaultcallingapp
+
+data class Contact(
+    val name: String,
+    val phoneNumber: String
+)
+
+#  ContactsAdapter
+
+package com.mayurshelke.defaultcallingapp
+
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.recyclerview.widget.RecyclerView
+
+class ContactsAdapter(private val contacts: List<Contact>, private val listener: OnContactClickListener) : RecyclerView.Adapter<ContactsAdapter.ContactViewHolder>() {
+
+    interface OnContactClickListener {
+        fun onContactClick(contact: Contact)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ContactViewHolder {
+        val view = LayoutInflater.from(parent.context).inflate(android.R.layout.simple_list_item_2, parent, false)
+        return ContactViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ContactViewHolder, position: Int) {
+        val contact = contacts[position]
+        holder.nameTextView.text = contact.name
+        holder.phoneNumberTextView.text = contact.phoneNumber
+
+        holder.itemView.setOnClickListener {
+            listener.onContactClick(contact)
+        }
+    }
+
+    override fun getItemCount(): Int = contacts.size
+
+    inner class ContactViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+        val nameTextView: TextView = itemView.findViewById(android.R.id.text1)
+        val phoneNumberTextView: TextView = itemView.findViewById(android.R.id.text2)
+    }
+}
+
+#  DialerFragment
+
+package com.mayurshelke.defaultcallingapp
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.EditText
+import androidx.fragment.app.Fragment
+
+class DialerFragment : Fragment() {
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        val view = inflater.inflate(R.layout.fragment_dialer, container, false)
+        val phoneNumberInput = view.findViewById<EditText>(R.id.etPhoneNumber)
+        val callButton = view.findViewById<Button>(R.id.btnCall)
+
+        callButton.setOnClickListener {
+            val phoneNumber = phoneNumberInput.text.toString()
+            if (phoneNumber.isNotEmpty()) {
+                val dialIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber"))
+                startActivity(dialIntent)
+            }
+        }
+
+        return view
+    }
+}
+
+
